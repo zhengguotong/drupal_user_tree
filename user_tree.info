@@ -1,0 +1,7 @@
+name = user Tree
+description = Display User tree list
+core = 7.x
+
+dependencies[] = jquery_jstree
+dependencies[] = entityreference
+

@@ -1,0 +1,275 @@
+<?php
+
+/**
+ * @file
+ * jsTree examples.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function user_tree_menu() {
+  $items['user/%user/user-relation'] = array(
+    'title' => t('会员关系'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('user_tree_page_callback'),
+      //'access callback' => TRUE,
+      'access arguments' => array('view user relation'),
+      'type' => MENU_LOCAL_TASK,
+    'file' => 'user_tree.pages.inc',
+  );
+  $items['user-relation/data'] = array(
+    'page callback' => 'user_tree_data',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_permission()
+ */
+function user_tree_permission(){
+  return array(
+      'view user relation' => array(
+          'title' => t('View user relation'),
+          'description' => t('View user relation'),
+      ),
+  );
+}
+
+/**
+ * Ajax callback to return tree data
+ */
+function user_tree_data() {
+    global $user;
+    $roles =  $user->roles;
+    $user = user_load($user->uid);
+    $options = array();
+
+    if (in_array('administrator', $roles) || in_array('管理员', $roles)) {
+      $options = _user_tree_load_all_tree();
+    }else if(in_array('会员', $roles) ){
+      $options = _user_tree_load_child_parent($user);
+    }else{
+      $options =  _user_tree_get_root_tree($user);
+    }
+    drupal_json_output($options);
+}
+
+
+/**
+ * Implements hook_user_presave().
+ */
+function user_tree_user_presave(&$edit, $account, $category){
+
+    if($account->is_new == 'TRUE'){
+        $edit['roles'][5] = '5';//auto assign 会员role
+
+        //如果推荐人手机号码有填写，查找是否有对应的用户
+        if(!empty($edit['field_parent_user_phone']['und'])){
+            $uids = _user_tree_get_user_by_phone($edit['field_parent_user_phone']['und'][0]['value']);
+
+            if(!empty($uids) && count($uids) > 0){
+                $parent = user_load($uids[0]);
+                if (in_array('会员', $parent->roles)){
+                    $edit['field_parent_user']['und'][0]['target_id'] = $parent->uid;
+                    return;
+                }
+            }
+        }
+
+
+        if(!empty($edit['field_address']['und'])){
+
+            $stores = _user_tree_users_by_role('加盟店');
+
+            foreach ( $stores as $store){
+                //如果有输入邮政编码， 查看是否有存在相应的
+                if(!empty($store->field_address['und'][0]['postal_code']) &&!empty( $edit['field_address']['und'][0]['postal_code'])){
+                    if (trim($edit['field_address']['und'][0]['postal_code']) == trim($store->field_address['und'][0]['postal_code'])){
+                        $edit['field_parent_user']['und'][0]['target_id'] = $store->uid;
+                        return;
+                    }
+                }
+
+                //比较区级,
+                if(!empty($store->field_address['und'][0]['dependent_locality']) && !empty($edit['field_address']['und'][0]['dependent_locality'])){
+                    if (trim($edit['field_address']['und'][0]['dependent_locality']) == trim($store->field_address['und'][0]['dependent_locality'])){
+                        $edit['field_parent_user']['und'][0]['target_id'] = $store->uid;
+                        return;
+                    }
+                }
+
+                //比较城市
+                if(!empty($store->field_address['und'][0]['locality']) && !empty($edit['field_address']['und'][0]['locality'])){
+                    if (trim($edit['field_address']['und'][0]['locality']) == trim($store->field_address['und'][0]['locality'])){
+                        $edit['field_parent_user']['und'][0]['target_id'] = $store->uid;
+                        return;
+                    }
+                }
+
+                //比较省
+                if(!empty($store->field_address['und'][0]['administrative_area']) && !empty($edit['field_address']['und'][0]['administrative_area'])){
+
+                    if (trim($edit['field_address']['und'][0]['administrative_area']) == trim($store->field_address['und'][0]['administrative_area'])){
+                        $edit['field_parent_user']['und'][0]['target_id'] = $store->uid;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Get user given by user phone
+ * @param $phone string
+ */
+function _user_tree_get_user_by_phone($phone){
+    $uids = db_select('field_data_field_parent_user_phone', 'pup')
+        ->fields('pup', array('entity_id'))
+        ->condition('pup.field_parent_user_phone_value', $phone, '=')
+        ->execute()
+        ->fetchCol();
+    return  $uids;
+  }
+
+
+
+/**
+ * get tree list for manager role
+ * @return get tree list for manager role
+ */
+function _user_tree_load_all_tree(){
+  $options = array();
+
+  $users = _user_tree_users_by_role('会员');
+  foreach ($users as $user){
+    $parent = "#";
+
+    if(!empty( $user->field_parent_user)) {
+      $parent =  $user->field_parent_user['und'][0]['target_id'];
+    }
+    $options[] = array(
+        'id' => $user->uid,
+        'text' => $user->name,
+        'icon' => 'fa fa-user',
+        'parent' => $parent
+    );
+  }
+
+  $users = _user_tree_users_by_role('管理员');
+  foreach ($users as $user){
+    $parent = "#";
+    $options[] = array(
+        'id' => $user->uid,
+        'text' => $user->name,
+        'parent' => '#',
+        'icon' => 'fa fa-user',
+        'state' =>array(
+            'opened' => true,
+
+        )
+    );
+  }
+  return $options;
+}
+
+/**
+ * get this user direct parent user and all child users
+ *
+ * @param $user
+ */
+function _user_tree_load_child_parent($user){
+   $options = array();
+    //Get this user direct parent
+    if(!empty( $user->field_parent_user)){
+
+      $parent_id = $user->field_parent_user['und'][0]['target_id'];
+      $parent = user_load($parent_id);
+      if(!empty($parent)){
+        $options[]  = _user_tree_get_root_tree($parent);
+      }
+      $options[] =  array(
+          'id' => $user->uid,
+          'text' => $user->name,
+          'icon' => 'fa fa-user',
+          'parent' => $parent_id,
+          'state' =>array(
+              'opened' => true,
+              'selected' => true
+          )
+      );
+    }
+    else{
+      $options[] = _user_tree_get_root_tree($user);
+    }
+  $options = _user_tree_get_all_child($user->uid,$options);
+
+  return $options;
+}
+
+/**
+ * using recursion to get all child user given by user id
+ *
+ * @param $uid
+ * @param $options
+ * @param null $users
+ * @return array
+ */
+function _user_tree_get_all_child($uid,&$options,$users = null){
+
+  if($users == null){//when this is first time call get all user list
+    $users = _user_tree_users_by_role('会员');
+  }
+
+  foreach ($users as $user){
+    if(!empty( $user->field_parent_user)) {
+       if ( $user->field_parent_user['und'][0]['target_id'] == $uid){
+         $options[] = array(
+             'id' => $user->uid,
+             'text' => $user->name,
+             'icon' => 'fa fa-user',
+             'parent' => $uid,
+         );
+        _user_tree_get_all_child($user->uid,$options,$users);//recursive call
+       }
+    }
+  }
+  return $options;
+}
+
+/***
+ * return root tree options
+ * @param $user
+ * @return array
+ */
+function _user_tree_get_root_tree($user){
+ return  array(
+        'id' => $user->uid,
+        'text' => $user->name,
+        'icon' => 'fa fa-user',
+        'parent' => '#',
+       'state' =>array(
+           'opened' => true
+       )
+    );
+}
+
+/**
+ * get all user by role name
+ * @param $role_name
+ * @return mixed
+ */
+function _user_tree_users_by_role($role_name) {
+  $role = user_role_load_by_name($role_name);
+  $uids = db_select('users_roles', 'ur')
+      ->fields('ur', array('uid'))
+      ->condition('ur.rid', $role->rid, '=')
+      ->execute()
+      ->fetchCol();
+  $users = user_load_multiple($uids);
+  return $users;
+}
+
